@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Codepipeline for deploying a Cloudformation StackSet
+
+#####################################################################
+# This file deploys a pipeline for deploying CloudFormation         #
+# StackSets and StackInstances                                      #
+# Source stage is an S3 upload                                      #
+# Build is 2-step: StackSet & StackInstance                         #
+#####################################################################
+
+Parameters:
+
+  CodePipelineArtifactsS3BucketName:
+    Description: Name of the CodePipeline S3 bucket to create to store temporary build artifacts
+    Type: String
+    Default: pipelineartifactbucket
+
+  SourceBucketName:
+    Description: Name of the S3 bucket containing the source files
+    Type: String
+    Default: pipelinesourcebucket
+
+  SourceFile:
+    Description: File name for the zipped source files
+    Type: String
+    Default: pipelinesource.zip
+
+  AccountFile:
+    Description: File name for the account list file for Stack Instances
+    Type: String
+    Default: accounts.txt
+
+  AdministrationRole:
+    Description: The ARN for the StackSet Administration Role in Shared Services
+    Type: String
+    Default: arn:aws:iam::<account_number>:role/<role>
+
+  TargetRoleName:
+    Description: The name of the role in the Target Account used to deploy the Stack Instance
+    Type: String
+    Default: <target_role_name>
+
+  # CodePipelineRole:
+  #   Description: The ARN for the CodePipeline execution Role
+  #   Type: String
+  #   Default: <pipeline_execution_role>
+  
+  CloudFormationMasterAccountNumber:
+    Description: The CloudFormation Master Account Number
+    Type: String
+    Default: "112233445566"
+
+Resources:
+
+#================================================================================
+# IAM Service Role - AWS CodePipeline
+#================================================================================
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "Example-Pipeline-CodePipelineRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Action:
+            - 'sts:AssumeRole'
+          Effect: Allow
+          Principal:
+            Service:
+              - codepipeline.amazonaws.com
+      Path: /
+
+#================================================================================
+# IAM Policies for CodePipeline
+#================================================================================
+
+  CodePipelineArtifactsS3BucketPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: "Example-Pipeline-CodePipelineArtifactsS3BucketPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 's3:List*'
+            - 's3:Get*'
+          Resource:
+            - !Sub 'arn:aws:s3:::${CodePipelineArtifactsS3Bucket}'
+            - !Sub 'arn:aws:s3:::${SourceS3Bucket}'
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineArtifactsS3BucketObjectsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: "Example-Pipeline-CodePipelineArtifactsS3BucketObjectsPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 's3:Get*'
+            - 's3:Put*'
+          Resource:
+            - !Sub 'arn:aws:s3:::${CodePipelineArtifactsS3Bucket}/*'
+            - !Sub 'arn:aws:s3:::${SourceS3Bucket}/*'
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineBasePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: "Example-Pipeline-CodePipelineBase"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 'iam:PassRole'
+            - 'codepipeline:*'
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+#================================================================================
+# CodePipeline Artifacts S3 Bucket
+#================================================================================
+
+  CodePipelineArtifactsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref CodePipelineArtifactsS3BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+         BlockPublicAcls: true
+         IgnorePublicAcls: true
+         BlockPublicPolicy: true
+         RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  CodePipelineArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodePipelineArtifactsS3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Action:
+              - "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${CodePipelineArtifactsS3Bucket}/*"
+            Principal: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+#================================================================================
+# Source S3 Bucket
+#================================================================================
+
+  SourceS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SourceBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+         BlockPublicAcls: true
+         IgnorePublicAcls: true
+         BlockPublicPolicy: true
+         RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  SourceBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SourceS3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Action:
+              - "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${SourceS3Bucket}/*"
+            Principal: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+
+#================================================================================
+# CodePipeline Deployment Pipeline
+#================================================================================
+
+  ExamplePipelineCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: Example-CFN-Pipeline
+      ArtifactStore:
+        Location: !Ref CodePipelineArtifactsS3Bucket
+        Type: S3
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Stages:
+          - Name: Source
+            Actions:
+              - Name: Source
+                ActionTypeId:
+                  Category: Source
+                  Owner: AWS
+                  Provider: S3
+                  Version: "1"
+                Configuration:
+                  PollForSourceChanges: true
+                  S3Bucket: !Ref SourceS3Bucket
+                  S3ObjectKey: !Ref SourceFile
+                OutputArtifacts:
+                  - Name: SourceArtifact
+                RunOrder: 1
+          - Name: Deploy
+            Actions:
+              - Name: DeployStackSet
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormationStackSet
+                  Version: "1"
+                RunOrder: 2
+                Configuration:
+                  StackSetName: ExampleStackName
+                  Description: Deploys CloudFormation Stack
+                  TemplatePath: SourceArtifact::template.yaml
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  PermissionModel: SELF_MANAGED
+                  AdministrationRoleArn: !Ref AdministrationRole
+                  ExecutionRoleName: !Ref TargetRoleName
+                  DeploymentTargets: !Ref CloudFormationMasterAccountNumber
+                  Regions: ap-southeast-2
+                  FailureTolerancePercentage: "20"
+                  MaxConcurrentPercentage: "25"
+                InputArtifacts:
+                  - Name: SourceArtifact
+                Region: ap-southeast-2
+              - Name: DeployInstances
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormationStackInstances
+                  Version: "1"
+                RunOrder: 3
+                Configuration:
+                  StackSetName: ExampleStackName
+                  DeploymentTargets: !Sub "SourceArtifact::${AccountFile}"
+                  Regions: ap-southeast-2
+                  FailureTolerancePercentage: "20"
+                  MaxConcurrentPercentage: "25"
+                InputArtifacts:
+                  - Name: SourceArtifact
+                Region: ap-southeast-2
