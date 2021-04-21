@@ -6,6 +6,9 @@ Description: Codepipeline for deploying a Cloudformation StackSet
 # StackSets and StackInstances                                      #
 # Source stage is an S3 upload                                      #
 # Build is 2-step: StackSet & StackInstance                         #
+# Currently this cannot do a remote deploy                          #
+#   where pipeline account and stackset master are in               #
+#   different account                                               #
 #####################################################################
 
 Parameters:
